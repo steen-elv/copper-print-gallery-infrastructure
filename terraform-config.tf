@@ -3,7 +3,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 3.0"
+      version = "~> 4.0"
     }
     heroku = {
       source  = "heroku/heroku"
@@ -37,19 +37,19 @@ variable "environment" {
 resource "heroku_app" "web_app" {
   name   = "${var.project_name}-web"
   region = "us"
-  stack  = "heroku-20"
+  stack  = "heroku-22"
 }
 
 resource "heroku_app" "artist_web_app" {
   name   = "${var.project_name}-artist"
   region = "us"
-  stack  = "heroku-20"
+  stack  = "heroku-22"
 }
 
 # Heroku Add-ons
 resource "heroku_addon" "auth0" {
-  app  = heroku_app.artist_web_app.name
-  plan = "auth0:free"
+  app_id = heroku_app.artist_web_app.id
+  plan   = "auth0:free"
 }
 
 # AWS VPC
@@ -59,6 +59,10 @@ resource "aws_vpc" "main" {
   tags = {
     Name = "${var.project_name}-vpc"
   }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 resource "aws_subnet" "main" {
@@ -74,11 +78,12 @@ resource "aws_subnet" "main" {
 
 # AWS Lambda Functions
 resource "aws_lambda_function" "content_service" {
-  filename      = "content_service.zip"
-  function_name = "${var.project_name}-content-service"
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "index.handler"
-  runtime       = "nodejs14.x"
+  filename         = "content_service.zip"
+  function_name    = "${var.project_name}-content-service"
+  role             = aws_iam_role.lambda_exec.arn
+  handler          = "index.handler"
+  runtime          = "nodejs14.x"
+  source_code_hash = filebase64sha256("content_service.zip")
 
   environment {
     variables = {
@@ -88,11 +93,12 @@ resource "aws_lambda_function" "content_service" {
 }
 
 resource "aws_lambda_function" "search_service" {
-  filename      = "search_service.zip"
-  function_name = "${var.project_name}-search-service"
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "index.handler"
-  runtime       = "nodejs14.x"
+  filename         = "search_service.zip"
+  function_name    = "${var.project_name}-search-service"
+  role             = aws_iam_role.lambda_exec.arn
+  handler          = "index.handler"
+  runtime          = "nodejs14.x"
+  source_code_hash = filebase64sha256("search_service.zip")
 
   environment {
     variables = {
@@ -102,11 +108,12 @@ resource "aws_lambda_function" "search_service" {
 }
 
 resource "aws_lambda_function" "image_service" {
-  filename      = "image_service.zip"
-  function_name = "${var.project_name}-image-service"
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "main.handler"
-  runtime       = "python3.8"
+  filename         = "image_service.zip"
+  function_name    = "${var.project_name}-image-service"
+  role             = aws_iam_role.lambda_exec.arn
+  handler          = "main.handler"
+  runtime          = "python3.8"
+  source_code_hash = filebase64sha256("image_service.zip")
 
   environment {
     variables = {
@@ -146,18 +153,21 @@ resource "aws_api_gateway_integration" "content_post" {
 
 # API Gateway Authorizer
 resource "aws_api_gateway_authorizer" "main" {
-  name                   = "auth0-authorizer"
-  rest_api_id            = aws_api_gateway_rest_api.main.id
-  authorizer_uri         = aws_lambda_function.auth_middleware.invoke_arn
-  authorizer_credentials = aws_iam_role.invocation_role.arn
+  name                             = "auth0-authorizer"
+  rest_api_id                      = aws_api_gateway_rest_api.main.id
+  authorizer_uri                   = aws_lambda_function.auth_middleware.invoke_arn
+  authorizer_credentials           = aws_iam_role.invocation_role.arn
+  authorizer_result_ttl_in_seconds = 300
+  type                             = "TOKEN"
 }
 
 resource "aws_lambda_function" "auth_middleware" {
-  filename      = "auth_middleware.zip"
-  function_name = "${var.project_name}-auth-middleware"
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "index.handler"
-  runtime       = "nodejs14.x"
+  filename         = "auth_middleware.zip"
+  function_name    = "${var.project_name}-auth-middleware"
+  role             = aws_iam_role.lambda_exec.arn
+  handler          = "index.handler"
+  runtime          = "nodejs14.x"
+  source_code_hash = filebase64sha256("auth_middleware.zip")
 
   environment {
     variables = {
@@ -174,7 +184,7 @@ resource "aws_db_instance" "main" {
   engine            = "postgres"
   engine_version    = "13.3"
   instance_class    = "db.t3.micro"
-  name              = "copperprintgallery"
+  db_name           = "copperprintgallery"
   username          = "dbadmin"
   password          = "CHANGE_ME"  # Use AWS Secrets Manager in production
 
@@ -189,13 +199,33 @@ resource "aws_db_subnet_group" "main" {
   subnet_ids = aws_subnet.main[*].id
 }
 
+resource "aws_security_group" "rds" {
+  name        = "${var.project_name}-rds-sg"
+  description = "Security group for RDS instance"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+}
+
 # S3 Buckets
 resource "aws_s3_bucket" "file_storage" {
   bucket = "${var.project_name}-file-storage"
-  acl    = "private"
+}
 
-  versioning {
-    enabled = true
+resource "aws_s3_bucket_acl" "file_storage" {
+  bucket = aws_s3_bucket.file_storage.id
+  acl    = "private"
+}
+
+resource "aws_s3_bucket_versioning" "file_storage" {
+  bucket = aws_s3_bucket.file_storage.id
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -220,6 +250,40 @@ resource "aws_iam_role" "lambda_exec" {
 resource "aws_iam_role_policy_attachment" "lambda_exec" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role" "invocation_role" {
+  name = "${var.project_name}-api-gateway-auth-invocation"
+  path = "/"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "apigateway.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "invocation_policy" {
+  name = "${var.project_name}-api-gateway-auth-invocation"
+  role = aws_iam_role.invocation_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "lambda:InvokeFunction"
+        Effect   = "Allow"
+        Resource = aws_lambda_function.auth_middleware.arn
+      }
+    ]
+  })
 }
 
 # CloudWatch Log Groups
@@ -269,6 +333,30 @@ resource "aws_route53_record" "api" {
     zone_id                = aws_api_gateway_domain_name.main.cloudfront_zone_id
     evaluate_target_health = true
   }
+}
+
+resource "aws_api_gateway_domain_name" "main" {
+  domain_name              = "api.copperprintgallery.com"
+  regional_certificate_arn = aws_acm_certificate.api.arn
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+}
+
+resource "aws_acm_certificate" "api" {
+  domain_name       = "api.copperprintgallery.com"
+  validation_method = "DNS"
+}
+
+# API Gateway Deployment
+resource "aws_api_gateway_deployment" "main" {
+  depends_on = [
+    aws_api_gateway_integration.content_post,
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  stage_name  = "prod"
 }
 
 # outputs.tf
